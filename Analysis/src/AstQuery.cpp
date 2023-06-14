@@ -338,7 +338,7 @@ std::optional<Binding> findBindingAtPosition(const Module& module, const SourceM
     while (currentScope)
     {
         auto iter = currentScope->bindings.find(name);
-        if (iter != currentScope->bindings.end() && iter->second.location.begin <= pos)
+        if (iter != currentScope->bindings.end() && iter->second.location.begin <= pos && !iter->second.imported)
         {
             // Ignore this binding if we're inside its definition. e.g. local abc = abc -- Will take the definition of abc from outer scope
             std::optional<AstStatLocal*> bindingStatement = findBindingLocalStatement(source, iter->second);

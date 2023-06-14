@@ -8,6 +8,7 @@
 #include "Luau/Scope.h"
 #include "Luau/TypeInfer.h"
 #include "Luau/Variant.h"
+#include "Luau/Clone.h"
 
 #include <mutex>
 #include <string>
@@ -70,7 +71,7 @@ struct SourceNode
     ModuleName name;
     std::string humanReadableName;
     std::unordered_set<ModuleName> requireSet;
-    std::vector<std::pair<ModuleName, Location>> requireLocations;
+    std::vector<RequireListEntry> requireLocations;
     bool dirtySourceModule = true;
     bool dirtyModule = true;
     bool dirtyModuleForAutocomplete = true;
@@ -106,6 +107,39 @@ struct CheckResult
 
     std::vector<ModuleName> timeoutHits;
 };
+
+// <<< MTA
+enum class MTAScriptType : uint8_t
+{
+    Server = 1,
+    Client,
+    Shared
+};
+
+inline bool IsMTAScriptTypeMatched(MTAScriptType lhsType, MTAScriptType rhsType)
+{
+    return rhsType == MTAScriptType::Shared || lhsType == MTAScriptType::Shared || lhsType == rhsType;
+}
+
+struct MTAMetaEntry
+{
+    MTAScriptType type;
+
+    ModuleName name;
+};
+
+struct MTAMetaDescription
+{
+    std::vector<MTAMetaEntry> files;
+};
+
+using MTAScriptDescription = std::pair<std::shared_ptr<MTAMetaDescription>, MTAScriptType>;
+
+struct GlobalsCopyContext
+{
+    CloneState cloneState;
+};
+// MTA >>>
 
 struct FrontendModuleResolver : ModuleResolver
 {
@@ -171,6 +205,11 @@ struct Frontend
 
     LoadDefinitionFileResult loadDefinitionFile(GlobalTypes& globals, ScopePtr targetScope, std::string_view source, const std::string& packageName,
         bool captureComments, bool typeCheckForAutocomplete = false);
+    
+// <<< MTA
+    bool copyGlobalsFromModule(GlobalsCopyContext context, ModulePtr srcModule, ScopePtr targetScope, bool typeCheckForAutocomplete = false);
+    bool copyGlobalsFromModule(ModulePtr srcModule, ScopePtr targetScope, bool typeCheckForAutocomplete = false);
+// MTA >>>
 
     // Batch module checking. Queue modules and check them together, retrieve results with 'getCheckResult'
     // If provided, 'executeTask' function is allowed to call the 'task' function on any thread and return without waiting for 'task' to complete
@@ -215,6 +254,11 @@ private:
 
 public:
     const NotNull<BuiltinTypes> builtinTypes;
+
+// <<< MTA
+    std::map<ModuleName, MTAScriptDescription> scriptFiles;
+    ModulePtr currentModule;
+// MTA >>>
 
     FileResolver* fileResolver;
 

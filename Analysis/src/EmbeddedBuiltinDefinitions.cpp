@@ -99,6 +99,8 @@ declare os: {
 
 declare function require(target: any): any
 
+declare function include(target: any): any
+
 declare function getfenv(target: any): { [string]: any }
 
 declare _G: any

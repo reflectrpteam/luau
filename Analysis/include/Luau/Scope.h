@@ -24,6 +24,10 @@ struct Binding
     bool deprecated = false;
     std::string deprecatedSuggestion;
     std::optional<std::string> documentationSymbol;
+
+// <<< MTA
+    bool imported = false;
+// MTA >>>
 };
 
 struct Scope

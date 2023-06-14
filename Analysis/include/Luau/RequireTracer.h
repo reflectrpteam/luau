@@ -16,13 +16,22 @@ class AstExpr;
 class AstStatBlock;
 struct AstLocal;
 
+struct RequireListEntry
+{
+    ModuleName name;
+
+    Location location;
+
+    std::string_view typeName{}; // e.g. require or include
+};
+
 struct RequireTraceResult
 {
     DenseHashMap<const AstExpr*, ModuleInfo> exprs{nullptr};
 
-    std::vector<std::pair<ModuleName, Location>> requireList;
+    std::vector<RequireListEntry> requireList;
 };
 
-RequireTraceResult traceRequires(FileResolver* fileResolver, AstStatBlock* root, const ModuleName& currentModuleName);
+RequireTraceResult traceRequires(FileResolver* fileResolver, AstStatBlock* root, const ModuleName& currentModuleName, const char* fnName = "require");
 
 } // namespace Luau

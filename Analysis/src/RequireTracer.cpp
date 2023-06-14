@@ -9,11 +9,12 @@ namespace Luau
 
 struct RequireTracer : AstVisitor
 {
-    RequireTracer(RequireTraceResult& result, FileResolver* fileResolver, const ModuleName& currentModuleName)
+    RequireTracer(RequireTraceResult& result, FileResolver* fileResolver, const ModuleName& currentModuleName, const char* fnName = "require")
         : result(result)
         , fileResolver(fileResolver)
         , currentModuleName(currentModuleName)
         , locals(nullptr)
+        , fnName(fnName)
     {
     }
 
@@ -27,7 +28,7 @@ struct RequireTracer : AstVisitor
     {
         AstExprGlobal* global = expr->func->as<AstExprGlobal>();
 
-        if (global && global->name == "require" && expr->args.size >= 1)
+        if (global && global->name == fnName && expr->args.size >= 1)
             requireCalls.push_back(expr);
 
         return true;
@@ -133,7 +134,7 @@ struct RequireTracer : AstVisitor
 
             if (const ModuleInfo* info = result.exprs.find(arg))
             {
-                result.requireList.push_back({info->name, require->location});
+                result.requireList.push_back({info->name, require->location, fnName});
 
                 ModuleInfo infoCopy = *info; // copy *info out since next line invalidates info!
                 result.exprs[require] = std::move(infoCopy);
@@ -152,12 +153,14 @@ struct RequireTracer : AstVisitor
     DenseHashMap<AstLocal*, AstExpr*> locals;
     std::vector<AstExpr*> work;
     std::vector<AstExprCall*> requireCalls;
+
+    const char* fnName;
 };
 
-RequireTraceResult traceRequires(FileResolver* fileResolver, AstStatBlock* root, const ModuleName& currentModuleName)
+RequireTraceResult traceRequires(FileResolver* fileResolver, AstStatBlock* root, const ModuleName& currentModuleName, const char* fnName)
 {
     RequireTraceResult result;
-    RequireTracer tracer{result, fileResolver, currentModuleName};
+    RequireTracer tracer{result, fileResolver, currentModuleName, fnName};
     root->visit(&tracer);
     tracer.process();
     return result;

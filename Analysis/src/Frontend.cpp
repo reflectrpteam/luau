@@ -2,7 +2,6 @@
 #include "Luau/Frontend.h"
 
 #include "Luau/BuiltinDefinitions.h"
-#include "Luau/Clone.h"
 #include "Luau/Common.h"
 #include "Luau/Config.h"
 #include "Luau/ConstraintGraphBuilder.h"
@@ -176,6 +175,98 @@ LoadDefinitionFileResult Frontend::loadDefinitionFile(GlobalTypes& globals, Scop
     return LoadDefinitionFileResult{true, parseResult, sourceModule, checkedModule};
 }
 
+// <<< MTA
+bool Luau::Frontend::copyGlobalsFromModule(GlobalsCopyContext context, ModulePtr srcModule, ScopePtr targetScope, bool typeCheckForAutocomplete)
+{
+    auto& globs = typeCheckForAutocomplete ? globalsForAutocomplete : globals;
+    auto& typeArena = currentModule ? currentModule->internalTypes : globs.globalTypes;
+    auto& names = currentModule ? currentModule->names : globs.globalNames.names;
+
+    const auto includeScope = srcModule->getModuleScope();
+    for (const auto& [sym, bind] : includeScope->bindings)
+    {
+        if (bind.imported)
+            continue;
+
+        const auto& ty = bind.typeId;
+        std::string documentationSymbol = bind.documentationSymbol.value_or("");
+
+        Luau::TypeId globalTy = clone(ty, typeArena, context.cloneState);
+        generateDocumentationSymbols(globalTy, documentationSymbol);
+
+        targetScope->bindings[names->getOrAdd(sym.c_str())] = {globalTy, bind.location, false, {}, documentationSymbol, true};
+    }    
+
+    return true;
+}
+
+bool Luau::Frontend::copyGlobalsFromModule(ModulePtr srcModule, ScopePtr targetScope, bool typeCheckForAutocomplete)
+{
+    class IncludesTracer
+    {
+    private:
+        const Frontend& frontend;
+
+        std::unordered_set<ModulePtr> excludeModules;
+
+    public:
+        explicit IncludesTracer(const Frontend& frontend, std::unordered_set<ModulePtr> excludeModules) :
+            frontend(frontend),
+            excludeModules(std::move(excludeModules))
+        {}
+
+        std::unordered_set<ModulePtr> modules;
+
+        void trace(const ModulePtr& modulePtr, bool typeCheckForAutocomplete)
+        {
+            auto& resolver = typeCheckForAutocomplete ? frontend.moduleResolverForAutocomplete : frontend.moduleResolver;
+
+            std::vector<ModulePtr> stack;
+            stack.push_back(modulePtr);
+
+            while (!stack.empty())
+            {
+                ModulePtr topModule = stack.back();
+                stack.pop_back();
+
+                if (modules.count(topModule))
+                    continue;
+
+                if (excludeModules.count(topModule))
+                    continue;
+
+                modules.insert(topModule);
+
+                if (auto foundTrace = frontend.requireTrace.find(topModule->name); foundTrace != frontend.requireTrace.end())
+                {
+                    for (const auto& [includeName, location, typeName] : foundTrace->second.requireList)
+                    {
+                        if (typeName != "include")
+                            continue;
+
+                        auto includeModule = resolver.getModule(includeName);
+                        if (!includeModule)
+                            continue;
+
+                        stack.push_back(includeModule);
+                    }
+                }
+            }
+        }
+    };
+
+    IncludesTracer tracer(*this, {currentModule});
+    tracer.trace(srcModule, typeCheckForAutocomplete);
+
+    GlobalsCopyContext context;
+
+    for (const auto& modulePtr : tracer.modules)
+        copyGlobalsFromModule(context, modulePtr, targetScope, typeCheckForAutocomplete);
+
+    return true;
+}
+// MTA >>>
+
 std::vector<std::string_view> parsePathExpr(const AstExpr& pathExpr)
 {
     const AstExprIndexName* indexName = pathExpr.as<AstExprIndexName>();
@@ -320,7 +411,7 @@ std::vector<RequireCycle> getRequireCycles(const FileResolver* resolver,
     std::vector<const SourceNode*> stack;
     std::vector<const SourceNode*> path;
 
-    for (const auto& [depName, depLocation] : start->requireLocations)
+    for (const auto& [depName, depLocation, depType] : start->requireLocations)
     {
         std::vector<ModuleName> cycle;
 
@@ -365,7 +456,10 @@ std::vector<RequireCycle> getRequireCycles(const FileResolver* resolver,
                 // this ensures that the cyclic path we report is the first one in DFS order
                 for (size_t i = top->requireLocations.size(); i > 0; --i)
                 {
-                    const ModuleName& reqName = top->requireLocations[i - 1].first;
+                    const ModuleName& reqName = top->requireLocations[i - 1].name;
+
+                    if (top->requireLocations[i - 1].typeName != "require")
+                        continue;
 
                     auto rit = sourceNodes.find(reqName);
                     if (rit != sourceNodes.end())
@@ -452,6 +546,15 @@ CheckResult Frontend::check(const ModuleName& name, std::optional<FrontendOption
 
         if (item.name == name)
             checkResult.lintResult = item.module->lintResult;
+// <<< MTA
+        else if (item.sourceNode)
+        {
+            if (frontendOptions.forAutocomplete)
+                item.sourceNode->dirtyModuleForAutocomplete = true;
+            else
+                item.sourceNode->dirtyModule = true;
+        }
+// MTA >>>
     }
 
     return checkResult;
@@ -1200,8 +1303,10 @@ ModulePtr Frontend::check(const SourceModule& sourceModule, Mode mode, std::vect
 
         if (prepareModuleScope)
         {
-            typeChecker.prepareModuleScope = [this, forAutocomplete](const ModuleName& name, const ScopePtr& scope) {
+            typeChecker.prepareModuleScope = [&typeChecker, this, forAutocomplete](const ModuleName& name, const ScopePtr& scope) {
+                currentModule = typeChecker.currentModule;
                 prepareModuleScope(name, scope, forAutocomplete);
+                currentModule.reset();
             };
         }
 
@@ -1253,7 +1358,29 @@ std::pair<SourceNode*, SourceModule*> Frontend::getSourceNode(const ModuleName& 
     result.type = source->type;
 
     RequireTraceResult& require = requireTrace[name];
-    require = traceRequires(fileResolver, result.root, name);
+    require = traceRequires(fileResolver, result.root, name, "require");
+
+// <<< RRP
+    RequireTraceResult includes = traceRequires(fileResolver, result.root, name, "include");
+    for (const auto& entry : includes.requireList)
+        require.requireList.push_back(entry);
+// RRP >>>
+
+// <<< MTA
+    auto scriptInfo = scriptFiles.find(name);
+    if (scriptInfo != scriptFiles.end())
+    {
+        const auto& [meta, type] = scriptInfo->second;
+        if (meta)
+        {
+            for (const auto& entry : meta->files)
+            {
+                if (entry.name != name && IsMTAScriptTypeMatched(type, entry.type))
+                    require.requireList.push_back({entry.name, Location{}, "shared"});
+            }
+        }
+    }    
+// MTA >>>
 
     std::shared_ptr<SourceNode>& sourceNode = sourceNodes[name];
 
@@ -1280,8 +1407,8 @@ std::pair<SourceNode*, SourceModule*> Frontend::getSourceNode(const ModuleName& 
         sourceNode->dirtyModuleForAutocomplete = true;
     }
 
-    for (const auto& [moduleName, location] : require.requireList)
-        sourceNode->requireSet.insert(moduleName);
+    for (const auto& entry : require.requireList)
+        sourceNode->requireSet.insert(entry.name);
 
     sourceNode->requireLocations = require.requireList;
 

@@ -98,7 +98,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "find_a_require")
 
     auto res = traceRequires(&naiveFileResolver, program, "");
     CHECK_EQ(1, res.requireList.size());
-    CHECK_EQ(res.requireList[0].first, "Modules/Foo/Bar");
+    CHECK_EQ(res.requireList[0].name, "Modules/Foo/Bar");
 }
 
 // It could be argued that this should not work.
